@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
 
 # Daten laden
@@ -25,39 +24,47 @@ data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 # Zeitstempel in Stunden umwandeln
 data['hour'] = pd.to_datetime(data['tmsp']).dt.hour
 
+# PSP-Kategorien behalten
+unique_psps = data['PSP'].unique()
+
 # Relevante Features
 features = ['failure_fee', 'success_fee', '3D_secured', 'amount', 'hour']
-X = data[features]
-y = data['success']
-
-# Datenaufteilung
-psps = data['PSP'].unique()
 results = {}
-scaler = StandardScaler()
 
-for psp in psps:
-    # Daten für PSP filtern
+for psp in unique_psps:
+    # Filter für den PSP
     psp_data = data[data['PSP'] == psp]
-    X_psp = scaler.fit_transform(psp_data[features])
+
+    # Prüfen, ob Daten für den PSP vorhanden sind
+    if psp_data.empty:
+        print(f"Keine Daten für PSP: {psp}")
+        continue
+
+    X_psp = psp_data[features]
     y_psp = psp_data['success']
 
-    # Stratified Split
+    # Prüfen, ob mindestens zwei Klassen existieren
+    if len(y_psp.unique()) < 2:
+        print(f"Nicht genug Klassen für PSP: {psp}")
+        continue
+
+    # Datenaufteilung
     X_train, X_test, y_train, y_test = train_test_split(X_psp, y_psp, test_size=0.3, random_state=42, stratify=y_psp)
 
-    # Support Vector Machine mit RBF Kernel
-    model = SVC(probability=True, kernel='rbf', C=1, gamma='scale', random_state=42)
-    model.fit(X_train, y_train)
+    # Decision Tree Classifier
+    tree_model = DecisionTreeClassifier(max_depth=50, random_state=42)
+    tree_model.fit(X_train, y_train)
 
     # Vorhersagen und Evaluation
-    y_pred_prob = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_pred_prob >= 0.5).astype(int)
+    y_pred_prob = tree_model.predict_proba(X_test)[:, 1]
+    y_pred = tree_model.predict(X_test)
 
     auc = roc_auc_score(y_test, y_pred_prob)
     accuracy = accuracy_score(y_test, y_pred)
     conf_matrix = confusion_matrix(y_test, y_pred)
 
     results[psp] = {
-        'Model': model,
+        'Model': tree_model,
         'AUC': auc,
         'Accuracy': accuracy,
         'Confusion Matrix': conf_matrix,
@@ -69,24 +76,28 @@ for psp in psps:
     print("Confusion Matrix:")
     print(conf_matrix)
 
-# Regelbasierte Entscheidung
+# Regelbasierte Auswahl
 def assign_psp(transaction_data):
     """
-    Wählt den optimalen PSP basierend auf Erfolgswahrscheinlichkeit und Kosten.
+    Wählt den besten PSP basierend auf Erfolgswahrscheinlichkeit und Kosten.
     """
     best_psp = None
     best_score = float('-inf')
     explanation = ""
 
-    for psp in transaction_data['PSP'].unique():
+    for psp in unique_psps:
         psp_data = transaction_data[transaction_data['PSP'] == psp]
-        model = results[psp]['Model']
-        success_prob = model.predict_proba(scaler.transform(psp_data[features]))[:, 1]
+        if psp_data.empty:
+            continue
 
+        model = results.get(psp, {}).get('Model')
+        if not model:
+            continue
+
+        success_prob = model.predict_proba(psp_data[features])[:, 1]
         avg_success_prob = success_prob.mean()
-        cost = np.where(success_prob >= 0.5, psp_data['success_fee'], psp_data['failure_fee']).mean()
 
-        # Bewertung: Erfolgswahrscheinlichkeit - gewichtete Kosten
+        cost = np.where(success_prob >= 0.5, psp_data['success_fee'], psp_data['failure_fee']).mean()
         score = avg_success_prob - 0.1 * cost
 
         if score > best_score:

@@ -2,17 +2,26 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
-from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_auc_score, accuracy_score, classification_report, confusion_matrix
+
 
 # Daten laden
 file_path = './Excel1.xlsx'
 data = pd.read_excel(file_path, engine='openpyxl')
 
-# Zielvariable formatieren
+# Sicherstellen, dass die Zielvariable 'success' korrekt formatiert ist
 data['success'] = data['success'].astype(int)
 
-# Gebührenstruktur des PSPs hinzufügen
+# Zeitstempel auf Minuten reduzieren
+data['tmsp_min'] = pd.to_datetime(data['tmsp']).dt.floor('min')  # Zeitstempel auf Minuten runden
+
+# Gruppierungsschlüssel erstellen
+data['group_key'] = data['tmsp_min'].astype(str) + '_' + data['country'] + '_' + data['amount'].astype(str)
+
+# Anzahl der Versuche berechnen
+data['attempt_count'] = data.groupby('group_key')['group_key'].transform('count')
+
+# Gebühren hinzufügen
 fees = {
     'Moneycard': {'success_fee': 5, 'failure_fee': 2},
     'Goldcard': {'success_fee': 10, 'failure_fee': 5},
@@ -22,67 +31,109 @@ fees = {
 data['success_fee'] = data['PSP'].apply(lambda x: fees[x]['success_fee'])
 data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 
-# Zeitstempel in Stunden umwandeln
+# PSP-spezifische Erfolgsrate berechnen und hinzufügen
+psp_success_rate = data.groupby('PSP')['success'].mean()
+data['psp_success_rate'] = data['PSP'].map(psp_success_rate)
+
+# Zeitmerkmale hinzufügen
 data['hour'] = pd.to_datetime(data['tmsp']).dt.hour
 
 # One-Hot-Encoding für Länder
+data['original_country'] = data['country']  # Originalspalte sichern
 data = pd.get_dummies(data, columns=['country'], drop_first=False)
 
-# Relevante finale Features
-final_features = ['failure_fee', 'success_fee', '3D_secured', 'amount', 'hour', 'country_Germany']
+# Aggregation inklusive Dummy-Spalten
+aggregation = {
+    'tmsp': 'first',
+    'amount': 'first',
+    'success': 'max',
+    'PSP': 'first',
+    '3D_secured': 'first',
+    'card': 'first',
+    'attempt_count': 'first',
+    'success_fee': 'first',
+    'failure_fee': 'first',
+    'psp_success_rate': 'first',
+    'hour': 'first',
+    'original_country': 'first'
+}
+# Füge alle Dummy-Spalten zur Aggregation hinzu
+for col in data.columns:
+    if col.startswith('country_'):
+        aggregation[col] = 'first'
 
-# Ergebnisse speichern
+data = data.groupby('group_key').agg(aggregation).reset_index()
+
+
+# Temporäre Spalten entfernen
+data = data.drop(columns=['group_key', 'tmsp_min'], errors='ignore')
+
+# Bereinigte und aggregierte Daten ausgeben
+print("\nBereinigte und aggregierte Daten mit den relevanten Feldern, Gebühren und Anzahl der Versuche:")
+print(data[['tmsp', 'original_country', 'attempt_count']].head(6))
+
+
+# Finale Features
+final_features = ['psp_success_rate', '3D_secured', 'hour', 'attempt_count', 'amount', 'country_Germany']
+
+# Modelltraining und Bewertung für jede PSP
+psps = data['PSP'].unique()
 results = {}
-scaler = StandardScaler()
+
+# Speichern der Erfolgswahrscheinlichkeiten für jedes PSP
 psp_success_probabilities = {}
 
-for psp in data['PSP'].unique():
-    print(f"\nModell für PSP: {psp}")
-
-    # Daten für PSP filtern
+for psp in psps:
+    # Filter für den aktuellen PSP
     psp_data = data[data['PSP'] == psp]
-    X_psp = scaler.fit_transform(psp_data[final_features])
-    y_psp = psp_data['success']
+    X = psp_data[final_features]
+    y = psp_data['success']
 
-    # Stratified Split
-    X_train, X_test, y_train, y_test = train_test_split(X_psp, y_psp, test_size=0.3, random_state=42, stratify=y_psp)
+    # Trainings- und Testdaten aufteilen
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
-    # Logistische Regression mit Regularisierung
-    model = LogisticRegression(max_iter=1000, random_state=42, solver='liblinear', C=0.1)
+    # Modell trainieren
+    model = LogisticRegression(random_state=42, max_iter=1000)
     model.fit(X_train, y_train)
 
-    # Vorhersagen der Wahrscheinlichkeiten
-    y_pred_prob = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_pred_prob >= 0.5).astype(int)
+    # Vorhersagen auf Testdaten
+    y_pred = model.predict(X_test)
+    y_pred_proba = model.predict_proba(X_test)[:, 1]  # Wahrscheinlichkeiten für die positive Klasse (1)
 
-    auc = roc_auc_score(y_test, y_pred_prob)
+    # Speichern der Erfolgswahrscheinlichkeit
+    psp_success_probabilities[psp] = y_pred_proba.mean()
+
+    # Evaluation
+    auc = roc_auc_score(y_test, y_pred_proba)
     accuracy = accuracy_score(y_test, y_pred)
-    conf_matrix = confusion_matrix(y_test, y_pred)
+    report = classification_report(y_test, y_pred, zero_division=0)
+    matrix = confusion_matrix(y_test, y_pred)
 
-    # Erfolgswahrscheinlichkeit berechnen
-    success_probability = model.predict_proba(scaler.transform(psp_data[final_features]))[:, 1].mean()
-    psp_success_probabilities[psp] = success_probability
-
+    # Ergebnisse speichern
     results[psp] = {
-        'Model': model,
         'AUC': auc,
         'Accuracy': accuracy,
-        'Confusion Matrix': conf_matrix,
+        'Classification Report': report,
+        'Confusion Matrix': matrix,
+        'Model': model
     }
 
-    print(f"AUC: {auc:.4f}")
-    print(f"Accuracy: {accuracy:.4f}")
+    # Ergebnisse ausgeben
+    print(f"\nModell für PSP: {psp}")
+    print(f"AUC: {auc:.2f}")
+    print(f"Accuracy: {accuracy:.2f}")
+    print("Classification Report:")
+    print(report)
     print("Confusion Matrix:")
-    print(conf_matrix)
-    print(f"Erfolgswahrscheinlichkeit: {success_probability:.4f}")
+    print(matrix)
 
-# Erfolgswahrscheinlichkeiten für alle PSPs ausgeben
-print("\nErfolgswahrscheinlichkeiten für jeden PSP:")
+# Ausgabe der Erfolgswahrscheinlichkeiten für jedes PSP
+print("\nErfolgswahrscheinlichkeiten für jedes PSP:")
 for psp, prob in psp_success_probabilities.items():
-    print(f"{psp}: {prob:.4f}")
+    print(f"{psp}: Erfolgswahrscheinlichkeit = {prob:.2f}")
 
 
-# Regelbasierte Entscheidung
+
 def assign_psp(transaction_data):
     """
     Wählt einen PSP basierend auf Erfolgswahrscheinlichkeit und Kosten.
@@ -160,10 +211,9 @@ def assign_psp(transaction_data):
 
 
 
-
-# Beispieltransaktion bewerten
-example_transaction = data.sample(1)
+# Beispielausgabe für eine Transaktion
+example_transaction = data.sample(10)  # Beispiel: 10 zufällige Zeilen
 optimal_psp, explanation = assign_psp(example_transaction)
-print("\nOptimaler PSP für die Beispieltransaktion:")
-print(optimal_psp)
-print("Erklärung:", explanation)
+print("\nBeispielausgabe:")
+print(f"Optimaler PSP: {optimal_psp}")
+print(f"Erklärung: {explanation}")
