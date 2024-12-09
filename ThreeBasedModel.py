@@ -24,23 +24,23 @@ data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 # Zeitstempel in Stunden umwandeln
 data['hour'] = pd.to_datetime(data['tmsp']).dt.hour
 
-# PSP-Kategorien behalten
-unique_psps = data['PSP'].unique()
+# 'country' als numerischen Wert zuordnen (statt One-Hot-Encoding)
+country_mapping = {country: idx for idx, country in enumerate(data['country'].unique())}
+data['country_encoded'] = data['country'].map(country_mapping)
 
-# Relevante Features
-features = ['failure_fee', 'success_fee', '3D_secured', 'amount', 'hour']
+# Finale Features ohne Hot-Encoding
+final_features = ['failure_fee', 'success_fee', '3D_secured', 'amount', 'hour', 'country_encoded']
+
+# Ergebnisse speichern
 results = {}
+psp_success_probabilities = {}
 
-for psp in unique_psps:
-    # Filter für den PSP
+for psp in data['PSP'].unique():
+    print(f"\nModell für PSP: {psp}")
+
+    # Daten für PSP filtern
     psp_data = data[data['PSP'] == psp]
-
-    # Prüfen, ob Daten für den PSP vorhanden sind
-    if psp_data.empty:
-        print(f"Keine Daten für PSP: {psp}")
-        continue
-
-    X_psp = psp_data[features]
+    X_psp = psp_data[final_features]
     y_psp = psp_data['success']
 
     # Prüfen, ob mindestens zwei Klassen existieren
@@ -63,6 +63,10 @@ for psp in unique_psps:
     accuracy = accuracy_score(y_test, y_pred)
     conf_matrix = confusion_matrix(y_test, y_pred)
 
+    # Erfolgswahrscheinlichkeit berechnen
+    success_probability = tree_model.predict_proba(X_psp)[:, 1].mean()
+    psp_success_probabilities[psp] = success_probability
+
     results[psp] = {
         'Model': tree_model,
         'AUC': auc,
@@ -70,49 +74,54 @@ for psp in unique_psps:
         'Confusion Matrix': conf_matrix,
     }
 
-    print(f"\nModell für PSP: {psp}")
     print(f"AUC: {auc:.4f}")
     print(f"Accuracy: {accuracy:.4f}")
     print("Confusion Matrix:")
     print(conf_matrix)
+    print(f"Erfolgswahrscheinlichkeit: {success_probability:.4f}")
+
+# Erfolgswahrscheinlichkeiten für alle PSPs ausgeben
+print("\nErfolgswahrscheinlichkeiten für jeden PSP:")
+for psp, prob in psp_success_probabilities.items():
+    print(f"{psp}: {prob:.4f}")
+
+
 
 # Regelbasierte Auswahl
-def assign_psp(transaction_data):
-    """
-    Wählt den besten PSP basierend auf Erfolgswahrscheinlichkeit und Kosten.
-    """
-    best_psp = None
-    best_score = float('-inf')
-    explanation = ""
+# Berechne transaktionsspezifische Erfolgswahrscheinlichkeiten
+def calculate_specific_probabilities(transaction_data):
+    specific_success_probs = {}
+    print("\nTransaktionsspezifische Erfolgswahrscheinlichkeiten für die Beispieltransaktion:")
 
-    for psp in unique_psps:
+    # Iteriere über die PSPs
+    for psp in transaction_data['PSP'].unique():
         psp_data = transaction_data[transaction_data['PSP'] == psp]
-        if psp_data.empty:
-            continue
-
         model = results.get(psp, {}).get('Model')
-        if not model:
-            continue
 
-        success_prob = model.predict_proba(psp_data[features])[:, 1]
-        avg_success_prob = success_prob.mean()
+        if model and not psp_data.empty:
+            # Extrahiere die Merkmale aus der Transaktionszeile
+            input_features = psp_data[final_features].values.reshape(1, -1)
 
-        cost = np.where(success_prob >= 0.5, psp_data['success_fee'], psp_data['failure_fee']).mean()
-        score = avg_success_prob - 0.1 * cost
+            # Berechne die Wahrscheinlichkeit
+            specific_success_probs[psp] = model.predict_proba(input_features)[:, 1][0]
+        else:
+            specific_success_probs[psp] = 0.0  # Standardwert für fehlende Daten oder Modelle
 
-        if score > best_score:
-            best_score = score
-            best_psp = psp
-            explanation = (
-                f"PSP {psp} gewählt: Erfolgswahrscheinlichkeit = {avg_success_prob:.2f}, "
-                f"Kosten = {cost:.2f}, Score = {best_score:.2f}."
-            )
+    # Ausgabe der spezifischen Wahrscheinlichkeiten
+    for psp, prob in specific_success_probs.items():
+        print(f"{psp}: {prob:.4f}")
 
-    return best_psp, explanation
+    return specific_success_probs
 
-# Beispieltransaktion bewerten
+
+# Beispieltransaktion auswählen
 example_transaction = data.sample(1)
-optimal_psp, explanation = assign_psp(example_transaction)
-print("\nOptimaler PSP für die Beispieltransaktion:")
-print(optimal_psp)
-print("Erklärung:", explanation)
+
+# Globale Erfolgswahrscheinlichkeiten
+print("\nGlobale Erfolgswahrscheinlichkeiten für jeden PSP:")
+for psp, prob in global_success_probs.items():
+    print(f"{psp}: {prob:.4f}")
+
+# Transaktionsspezifische Wahrscheinlichkeiten berechnen
+specific_probs = calculate_specific_probabilities(example_transaction)
+
