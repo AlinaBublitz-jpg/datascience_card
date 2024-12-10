@@ -89,7 +89,7 @@ for psp, prob in psp_success_probabilities.items():
 
 # Regelbasierte Auswahl
 # Zeile auswählen (z. B. Zeile mit Index 5)
-selected_row_index = 14
+selected_row_index = 19
 selected_row = data.iloc[selected_row_index]
 selected_features = selected_row[final_features].values.reshape(1, -1)
 
@@ -114,6 +114,10 @@ for psp in data['PSP'].unique():
     # Erfolgswahrscheinlichkeit für die ausgewählte Zeile berechnen
     success_probability = tree_model.predict_proba(selected_features)[:, 1][0]
     psp_success_probabilities_row[psp] = success_probability
+
+
+
+
 
 # Erfolgswahrscheinlichkeiten ausgeben
 print("\nErfolgswahrscheinlichkeiten für die ausgewählte Zeile:")

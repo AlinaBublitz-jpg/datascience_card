@@ -150,88 +150,105 @@ print("\nErfolgswahrscheinlichkeiten für jedes PSP:")
 for psp, prob in psp_success_probabilities.items():
     print(f"{psp}: Erfolgswahrscheinlichkeit = {prob:.2f}")
 
+# Entscheidung
+# Zeile auswählen (z. B. Zeile mit Index 19)
+selected_row_index = 19
+selected_row = data.iloc[selected_row_index]
+selected_features = selected_row[final_features].values.reshape(1, -1)
 
+# Erfolgswahrscheinlichkeit für jeden PSP berechnen
+psp_success_probabilities_row = {}
 
-def assign_psp(transaction_data):
-    """
-    Wählt einen PSP basierend auf Erfolgswahrscheinlichkeit und Kosten.
-    :param transaction_data: DataFrame mit Transaktionsdetails für jeden PSP
-    :return: Optimaler PSP und Erklärung
-    """
-    psp_candidates = transaction_data['PSP'].unique()
-    success_probs = {}
-    best_psp = None
-    explanation = ""
+for psp in psps:
+    # Filter für den aktuellen PSP
+    psp_data = data[data['PSP'] == psp]
 
-    # Erfolgswahrscheinlichkeiten berechnen
-    for psp in psp_candidates:
-        psp_data = transaction_data[transaction_data['PSP'] == psp]
-        model = results[psp]['Model']
-        success_probs[psp] = model.predict_proba(psp_data[final_features])[:, 1].mean()
+    # Features (X) und Zielvariable (y) definieren
+    X = psp_data[final_features]
+    y = psp_data['success']
 
-    # Maximale Erfolgswahrscheinlichkeit bestimmen
-    max_prob = max(success_probs.values())
-    sorted_probs = sorted(success_probs.items(), key=lambda x: x[1], reverse=True)
+    # Prüfen, ob mindestens zwei Klassen existieren
+    if len(y.unique()) < 2:
+        print(f"Nicht genug Klassen für PSP: {psp}")
+        continue
 
-    # Regel 1: Wenn alle PSPs eine Erfolgswahrscheinlichkeit > 0.8 haben, wähle Simplecard
-    if all(prob > 0.8 for prob in success_probs.values()):
-        best_psp = 'Simplecard'
-        explanation = "Alle PSPs haben eine Erfolgswahrscheinlichkeit über 0,8, wähle Simplecard."
+    # Trainings- und Testdaten aufteilen
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
-    # Regel 2: Wenn alle PSPs eine Erfolgswahrscheinlichkeit < 0.2 haben, wähle den PSP mit der höchsten Erfolgswahrscheinlichkeit
-    elif all(prob < 0.2 for prob in success_probs.values()):
-        best_psp = sorted_probs[0][0]
-        explanation = f"Alle PSPs haben eine Erfolgswahrscheinlichkeit unter 0,2, wähle den PSP mit der höchsten Erfolgswahrscheinlichkeit ({best_psp})."
+    # Pipeline erstellen: Skalierung + Logistische Regression
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', LogisticRegression(random_state=42, max_iter=1000))
+    ])
 
-    # Regel 3: Wenn Simplecard die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('Simplecard', 0) == max_prob:
-        best_psp = 'Simplecard'
-        explanation = "Simplecard hat die höchste Erfolgswahrscheinlichkeit, wähle Simplecard."
+    # Hyperparameter-Tuning mit GridSearchCV
+    param_grid = {
+        'model__C': [0.1, 1, 10, 100],
+        'model__penalty': ['l1', 'l2'],
+        'model__solver': ['liblinear', 'saga']
+    }
 
-    # Regel 4: Wenn die Erfolgswahrscheinlichkeit von Simplecard um weniger als 0,1 schlechter ist als die höchste,
-    # und die höchste Wahrscheinlichkeit nicht von einem anderen PSP mit größerem Abstand dominiert wird.
-    elif max_prob - success_probs.get('Simplecard', 0) < 0.1 and max_prob != success_probs.get('Simplecard', 0):
-        best_psp = 'Simplecard'
-        explanation = "Die Erfolgswahrscheinlichkeit von Simplecard ist um weniger als 0,1 schlechter als die höchste, wähle Simplecard."
+    grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring='roc_auc')
+    grid_search.fit(X_train, y_train)
 
-    # Regel 5: Wenn UK_Card die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('UK_Card', 0) == max_prob:
-        best_psp = 'UK_Card'
-        explanation = "UK_Card hat die höchste Erfolgswahrscheinlichkeit, wähle UK_Card."
+    # Bestes Modell aus GridSearch verwenden
+    best_model = grid_search.best_estimator_
 
-    # Regel 6: Wenn die Erfolgswahrscheinlichkeit von UK_Card um weniger als 0,1 schlechter ist als die höchste
-    elif max_prob - success_probs.get('UK_Card', 0) < 0.1 and max_prob != success_probs.get('UK_Card', 0):
-        best_psp = 'UK_Card'
-        explanation = "Die Erfolgswahrscheinlichkeit von UK_Card ist um weniger als 0,1 schlechter als die höchste, wähle UK_Card."
-
-    # Regel 7: Wenn Moneycard die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('Moneycard', 0) == max_prob:
-        best_psp = 'Moneycard'
-        explanation = "Moneycard hat die höchste Erfolgswahrscheinlichkeit, wähle Moneycard."
-
-    # Regel 8: Wenn die Erfolgswahrscheinlichkeit von Moneycard um weniger als 0,1 schlechter ist als die höchste
-    elif max_prob - success_probs.get('Moneycard', 0) < 0.1 and max_prob != success_probs.get('Moneycard', 0):
-        best_psp = 'Moneycard'
-        explanation = "Die Erfolgswahrscheinlichkeit von Moneycard ist um weniger als 0,1 schlechter als die höchste, wähle Moneycard."
-
-    # Regel 9: Wenn Goldcard die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('Goldcard', 0) == max_prob:
-        best_psp = 'Goldcard'
-        explanation = "Goldcard hat die höchste Erfolgswahrscheinlichkeit, wähle Goldcard."
-
-    # Standardauswahl, falls keine Regel greift (sollte nicht vorkommen)
-    else:
-        best_psp = sorted_probs[0][0]
-        explanation = f"Standardregel angewandt, wähle den PSP mit der höchsten Erfolgswahrscheinlichkeit ({best_psp})."
-
-    return best_psp, explanation
+    # Erfolgswahrscheinlichkeit für die ausgewählte Zeile berechnen
+    selected_features_scaled = best_model.named_steps['scaler'].transform(selected_features)
+    success_probability = best_model.predict_proba(selected_features_scaled)[:, 1][0]
+    psp_success_probabilities_row[psp] = success_probability
 
 
 
 
-# Beispielausgabe für eine Transaktion
-example_transaction = data.sample(10)  # Beispiel: 10 zufällige Zeilen
-optimal_psp, explanation = assign_psp(example_transaction)
-print("\nBeispielausgabe:")
-print(f"Optimaler PSP: {optimal_psp}")
-print(f"Erklärung: {explanation}")
+# Erfolgswahrscheinlichkeiten ausgeben
+print("\nErfolgswahrscheinlichkeiten für die ausgewählte Zeile:")
+for psp, prob in psp_success_probabilities_row.items():
+    print(f"{psp}: {prob:.4f}")
+
+# Liste der Wahrscheinlichkeiten extrahieren
+all_probs = list(psp_success_probabilities_row.values())
+
+# Initialisiere die Entscheidung als None
+chosen_psp = None
+
+# Regel 1: Wenn alle Wahrscheinlichkeiten exakt 0 sind, wähle Simplecard
+if all(prob == 0 for prob in all_probs):
+    chosen_psp = 'Simplecard'
+
+else:
+    # Maximale Erfolgswahrscheinlichkeit
+    max_prob = max(all_probs)
+
+    # Regel 2: Wenn Simplecard die höchste Erfolgswahrscheinlichkeit hat oder um weniger als 0,1 schlechter ist als der Rest, wähle Simplecard
+    if 'Simplecard' in psp_success_probabilities_row:
+        simplecard_prob = psp_success_probabilities_row['Simplecard']
+        if simplecard_prob == max_prob or max_prob - simplecard_prob < 0.1:
+            chosen_psp = 'Simplecard'
+
+    # Regel 3: Wenn UK_Card die höchste Erfolgswahrscheinlichkeit hat oder um weniger als 0,1 schlechter ist als der Rest, wähle UK_Card
+    if chosen_psp is None and 'UK_Card' in psp_success_probabilities_row:
+        uk_card_prob = psp_success_probabilities_row['UK_Card']
+        if uk_card_prob == max_prob or max_prob - uk_card_prob < 0.1:
+            chosen_psp = 'UK_Card'
+
+    # Regel 4: Wenn Moneycard die höchste Erfolgswahrscheinlichkeit hat oder um weniger als 0,1 schlechter ist als der Rest, wähle Moneycard
+    if chosen_psp is None and 'Moneycard' in psp_success_probabilities_row:
+        moneycard_prob = psp_success_probabilities_row['Moneycard']
+        if moneycard_prob == max_prob or max_prob - moneycard_prob < 0.1:
+            chosen_psp = 'Moneycard'
+
+    # Regel 5: Wenn Goldcard die höchste Erfolgswahrscheinlichkeit hat, wähle Goldcard
+    if chosen_psp is None and 'Goldcard' in psp_success_probabilities_row:
+        goldcard_prob = psp_success_probabilities_row['Goldcard']
+        if goldcard_prob == max_prob:
+            chosen_psp = 'Goldcard'
+
+# Fallback: Wenn keine Regel zutrifft, wähle Simplecard
+if chosen_psp is None:
+    chosen_psp = 'Simplecard'
+
+# Entscheidung ausgeben
+print(f"\nEntscheidung: Verwenden Sie {chosen_psp} als PSP.")
+
