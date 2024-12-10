@@ -1,9 +1,10 @@
 import pandas as pd
-from sklearn.metrics import confusion_matrix, accuracy_score, roc_auc_score, precision_score, recall_score, f1_score, precision_recall_curve
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import confusion_matrix, accuracy_score, roc_auc_score, precision_score, recall_score, f1_score, precision_recall_curve
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Pfad zur Excel-Datei
 file_path = './Excel1.xlsx'
@@ -28,45 +29,22 @@ try:
     y = data['success']
 
     # Daten in Trainings- und Testdaten aufteilen
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
-    # Logistische Regression: Cross-Validation und Hyperparameter-Tuning
-    param_grid = {
-        'C': [0.01, 0.1, 1, 10, 100],  # Inverser Regularisierungsparameter
-        'solver': ['liblinear', 'lbfgs']  # Unterschiedliche Optimierungsmethoden
-    }
-    logistic_model = LogisticRegression()
-    grid_search = GridSearchCV(estimator=logistic_model, param_grid=param_grid, scoring='roc_auc', cv=5, return_train_score=True)
-    grid_search.fit(X_train, y_train)
+    # Pipeline erstellen: Skalierung + Logistische Regression
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),  # Skalierung der Features
+        ('model', LogisticRegression(random_state=42, max_iter=1000))  # Logistische Regression
+    ])
 
-    # Ergebnisse aus der Cross-Validation
-    results = pd.DataFrame(grid_search.cv_results_)
-    print("\nCross-Validation-Ergebnisse:")
-    print(results[['param_C', 'param_solver', 'mean_test_score']])
+    # Pipeline trainieren
+    pipeline.fit(X_train, y_train)
 
-    # Visualisierung der Cross-Validation-Ergebnisse
-    plt.figure(figsize=(10, 6))
-    for solver in results['param_solver'].unique():
-        subset = results[results['param_solver'] == solver]
-        plt.plot(subset['param_C'], subset['mean_test_score'], label=f"Solver: {solver}")
-    plt.xscale('log')
-    plt.xlabel('C (Regularisierungsparameter)')
-    plt.ylabel('Mean Test AUC')
-    plt.title('Cross-Validation-Ergebnisse (AUC)')
-    plt.legend()
-    plt.grid()
-    plt.show()
+    # Vorhersagen auf Testdaten
+    y_pred = pipeline.predict(X_test)
+    y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
 
-    # Bestes Modell ausgeben
-    best_model = grid_search.best_estimator_
-    print("\nBestes Modell und Hyperparameter:")
-    print(grid_search.best_params_)
-
-    # Modell auf den Testdaten evaluieren
-    y_pred = best_model.predict(X_test)
-    y_pred_proba = best_model.predict_proba(X_test)[:, 1]  # Wahrscheinlichkeiten für Klasse 1
-
-    # Gesamt-Metriken berechnen
+    # Gesamt-Metriken berechnen (dies bleibt unverändert)
     accuracy = accuracy_score(y_test, y_pred)
     auc = roc_auc_score(y_test, y_pred_proba)
     precision = precision_score(y_test, y_pred, zero_division=0)
@@ -85,17 +63,18 @@ try:
     print(conf_matrix)
 
     # PSP-spezifische Metriken berechnen und ausgeben
-    best_psp = None
-    best_auc = 0
     print("\nMetriken pro PSP:")
     for psp in data['PSP'].unique():
         psp_data = data[data['PSP'] == psp]  # Filter für den aktuellen PSP
         if len(psp_data['success'].unique()) > 1:  # Sicherstellen, dass beide Klassen vorhanden sind
             psp_X = psp_data[['psp_success_rate']]
             psp_y = psp_data['success']
-            psp_pred = best_model.predict(psp_X)
-            psp_pred_proba = best_model.predict_proba(psp_X)[:, 1]
 
+            # Vorhersagen mit der Pipeline
+            psp_pred = pipeline.predict(psp_X)
+            psp_pred_proba = pipeline.predict_proba(psp_X)[:, 1]
+
+            # Berechnung der Metriken
             accuracy_psp = accuracy_score(psp_y, psp_pred)
             auc_psp = roc_auc_score(psp_y, psp_pred_proba)
             precision_psp = precision_score(psp_y, psp_pred, zero_division=0)
@@ -110,17 +89,8 @@ try:
             print(f"  Recall: {recall_psp:.2f}")
             print(f"  F1-Score: {f1_psp:.2f}")
             print(f"  Confusion Matrix:\n{conf_matrix_psp}")
-
-            # Bester PSP basierend auf AUC
-            if auc_psp > best_auc:
-                best_auc = auc_psp
-                best_psp = psp
         else:
             print(f"\n{psp}: Zu wenige Klassen für die Berechnung von Metriken (nur eine Klasse vorhanden).")
-
-    # Empfehlung ausgeben
-    print("\nEmpfohlener PSP:")
-    print(f"Der PSP mit der besten AUC ist: {best_psp} mit einer AUC von {best_auc:.2f}")
 
     # Precision-Recall-Kurve berechnen
     precision_vals, recall_vals, thresholds = precision_recall_curve(y_test, y_pred_proba)

@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report, confusion_matrix
-
 
 # Daten laden
 file_path = './Excel1.xlsx'
@@ -64,7 +65,6 @@ for col in data.columns:
 
 data = data.groupby('group_key').agg(aggregation).reset_index()
 
-
 # Temporäre Spalten entfernen
 data = data.drop(columns=['group_key', 'tmsp_min'], errors='ignore')
 
@@ -72,35 +72,52 @@ data = data.drop(columns=['group_key', 'tmsp_min'], errors='ignore')
 print("\nBereinigte und aggregierte Daten mit den relevanten Feldern, Gebühren und Anzahl der Versuche:")
 print(data[['tmsp', 'original_country', 'attempt_count']].head(6))
 
-
-# Finale Features
+# Finale Features (ohne 'success')
 final_features = ['psp_success_rate', '3D_secured', 'hour', 'attempt_count', 'amount', 'country_Germany']
 
-# Modelltraining und Bewertung für jede PSP
+# Einzigartige PSP-Werte extrahieren
 psps = data['PSP'].unique()
-results = {}
 
-# Speichern der Erfolgswahrscheinlichkeiten für jedes PSP
+# Initialisiere ein Dictionary für Ergebnisse
+results = {}
 psp_success_probabilities = {}
 
+# Modelle für jede PSP trainieren und bewerten
 for psp in psps:
     # Filter für den aktuellen PSP
     psp_data = data[data['PSP'] == psp]
-    X = psp_data[final_features]
-    y = psp_data['success']
+
+    # Features (X) und Zielvariable (y) definieren
+    X = psp_data[final_features]  # Nur Features, 'success' nicht enthalten
+    y = psp_data['success']      # Zielvariable
 
     # Trainings- und Testdaten aufteilen
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
-    # Modell trainieren
-    model = LogisticRegression(random_state=42, max_iter=1000)
-    model.fit(X_train, y_train)
+    # Pipeline erstellen: Skalierung + Logistische Regression
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', LogisticRegression(random_state=42, max_iter=1000))
+    ])
+
+    # Hyperparameter-Tuning mit GridSearchCV
+    param_grid = {
+        'model__C': [0.1, 1, 10, 100],  # Regularisierungsparameter
+        'model__penalty': ['l1', 'l2'],  # L1 oder L2 Regularisierung
+        'model__solver': ['liblinear', 'saga']  # Optimierungsmethoden
+    }
+
+    grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring='roc_auc')
+    grid_search.fit(X_train, y_train)
+
+    # Bestes Modell aus GridSearch verwenden
+    best_model = grid_search.best_estimator_
 
     # Vorhersagen auf Testdaten
-    y_pred = model.predict(X_test)
-    y_pred_proba = model.predict_proba(X_test)[:, 1]  # Wahrscheinlichkeiten für die positive Klasse (1)
+    y_pred = best_model.predict(X_test)
+    y_pred_proba = best_model.predict_proba(X_test)[:, 1]  # Wahrscheinlichkeiten für die positive Klasse (1)
 
-    # Speichern der Erfolgswahrscheinlichkeit
+    # Erfolgswahrscheinlichkeit speichern
     psp_success_probabilities[psp] = y_pred_proba.mean()
 
     # Evaluation
@@ -115,11 +132,12 @@ for psp in psps:
         'Accuracy': accuracy,
         'Classification Report': report,
         'Confusion Matrix': matrix,
-        'Model': model
+        'Model': best_model
     }
 
     # Ergebnisse ausgeben
     print(f"\nModell für PSP: {psp}")
+    print(f"Beste Hyperparameter: {grid_search.best_params_}")
     print(f"AUC: {auc:.2f}")
     print(f"Accuracy: {accuracy:.2f}")
     print("Classification Report:")
@@ -127,7 +145,7 @@ for psp in psps:
     print("Confusion Matrix:")
     print(matrix)
 
-# Ausgabe der Erfolgswahrscheinlichkeiten für jedes PSP
+# Erfolgswahrscheinlichkeiten für jedes PSP ausgeben
 print("\nErfolgswahrscheinlichkeiten für jedes PSP:")
 for psp, prob in psp_success_probabilities.items():
     print(f"{psp}: Erfolgswahrscheinlichkeit = {prob:.2f}")

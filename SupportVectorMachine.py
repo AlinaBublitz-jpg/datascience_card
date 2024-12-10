@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
 
 # Daten laden
@@ -33,7 +34,6 @@ final_features = ['failure_fee', 'success_fee', '3D_secured', 'amount', 'hour', 
 
 # Ergebnisse speichern
 results = {}
-scaler = StandardScaler()
 psp_success_probabilities = {}
 
 for psp in data['PSP'].unique():
@@ -44,18 +44,22 @@ for psp in data['PSP'].unique():
     X_psp = psp_data[final_features]
     y_psp = psp_data['success']
 
-    # Skalieren der Features
-    X_psp_scaled = pd.DataFrame(scaler.fit_transform(X_psp), columns=final_features, index=X_psp.index)
-
     # Stratified Split
-    X_train, X_test, y_train, y_test = train_test_split(X_psp_scaled, y_psp, test_size=0.3, random_state=42, stratify=y_psp)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_psp, y_psp, test_size=0.3, random_state=42, stratify=y_psp
+    )
 
-    # Support Vector Machine mit RBF Kernel
-    model = SVC(probability=True, kernel='rbf', C=1, gamma='scale', random_state=42)
-    model.fit(X_train, y_train)
+    # Pipeline erstellen
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('svm', SVC(probability=True, kernel='rbf', C=1, gamma='scale', random_state=42))
+    ])
+
+    # Modell trainieren
+    pipeline.fit(X_train, y_train)
 
     # Vorhersagen der Wahrscheinlichkeiten
-    y_pred_prob = model.predict_proba(X_test)[:, 1]
+    y_pred_prob = pipeline.predict_proba(X_test)[:, 1]
     y_pred = (y_pred_prob >= 0.5).astype(int)
 
     auc = roc_auc_score(y_test, y_pred_prob)
@@ -63,12 +67,11 @@ for psp in data['PSP'].unique():
     conf_matrix = confusion_matrix(y_test, y_pred)
 
     # Erfolgswahrscheinlichkeit berechnen
-    X_psp_transformed = pd.DataFrame(scaler.transform(X_psp), columns=final_features, index=X_psp.index)
-    success_probability = model.predict_proba(X_psp_transformed)[:, 1].mean()
+    success_probability = pipeline.predict_proba(X_psp)[:, 1].mean()
     psp_success_probabilities[psp] = success_probability
 
     results[psp] = {
-        'Model': model,
+        'Model': pipeline,
         'AUC': auc,
         'Accuracy': accuracy,
         'Confusion Matrix': conf_matrix,
@@ -86,6 +89,7 @@ for psp, prob in psp_success_probabilities.items():
     print(f"{psp}: {prob:.4f}")
 
 # Regelbasierte Entscheidung
+
 def assign_psp(transaction_data):
     """
     Wählt einen PSP basierend auf Erfolgswahrscheinlichkeit und Kosten.
@@ -94,75 +98,57 @@ def assign_psp(transaction_data):
     """
     psp_candidates = transaction_data['PSP'].unique()
     success_probs = {}
+    costs = {
+        'Moneycard': {'success_fee': 5, 'failure_fee': 2},
+        'Goldcard': {'success_fee': 10, 'failure_fee': 5},
+        'UK_Card': {'success_fee': 3, 'failure_fee': 1},
+        'Simplecard': {'success_fee': 1, 'failure_fee': 0.5}
+    }
     best_psp = None
     explanation = ""
 
-    # Erfolgswahrscheinlichkeiten berechnen
+    # Berechne Erfolgswahrscheinlichkeiten spezifisch für die Transaktion
     for psp in psp_candidates:
         psp_data = transaction_data[transaction_data['PSP'] == psp]
         model = results[psp]['Model']
-        success_probs[psp] = model.predict_proba(psp_data[final_features])[:, 1].mean()
+        success_probs[psp] = model.predict_proba(psp_data[final_features])[:, 1][0]  # Spezifische Wahrscheinlichkeit
 
     # Maximale Erfolgswahrscheinlichkeit bestimmen
     max_prob = max(success_probs.values())
     sorted_probs = sorted(success_probs.items(), key=lambda x: x[1], reverse=True)
 
-    # Regel 1: Wenn alle PSPs eine Erfolgswahrscheinlichkeit > 0.8 haben, wähle Simplecard
-    if all(prob > 0.8 for prob in success_probs.values()):
-        best_psp = 'Simplecard'
-        explanation = "Alle PSPs haben eine Erfolgswahrscheinlichkeit über 0,8, wähle Simplecard."
+    # Regel A: Höchste Erfolgswahrscheinlichkeit über 0.8
+    if max_prob > 0.8:
+        best_psp = max(success_probs, key=success_probs.get)
+        explanation = f"Der PSP {best_psp} hat die höchste Erfolgswahrscheinlichkeit von {max_prob:.2f}, wähle diesen PSP."
 
-    # Regel 2: Wenn alle PSPs eine Erfolgswahrscheinlichkeit < 0.2 haben, wähle den PSP mit der höchsten Erfolgswahrscheinlichkeit
-    elif all(prob < 0.2 for prob in success_probs.values()):
-        best_psp = sorted_probs[0][0]
-        explanation = f"Alle PSPs haben eine Erfolgswahrscheinlichkeit unter 0,2, wähle den PSP mit der höchsten Erfolgswahrscheinlichkeit ({best_psp})."
+    # Regel B: Ähnliche Erfolgswahrscheinlichkeiten (Differenz < 0.1), wähle den günstigsten
+    elif max_prob - sorted_probs[1][1] < 0.1:
+        cheapest_psp = min(
+            sorted_probs[:2],  # Nur die PSPs mit den höchsten Erfolgswahrscheinlichkeiten betrachten
+            key=lambda x: costs[x[0]]['success_fee']
+        )[0]
+        best_psp = cheapest_psp
+        explanation = f"Die PSPs haben ähnliche Erfolgswahrscheinlichkeiten. {best_psp} hat die geringsten Kosten."
 
-    # Regel 3: Wenn Simplecard die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('Simplecard', 0) == max_prob:
-        best_psp = 'Simplecard'
-        explanation = "Simplecard hat die höchste Erfolgswahrscheinlichkeit, wähle Simplecard."
-
-    # Regel 4: Wenn die Erfolgswahrscheinlichkeit von Simplecard um weniger als 0,1 schlechter ist als die höchste,
-    # und die höchste Wahrscheinlichkeit nicht von einem anderen PSP mit größerem Abstand dominiert wird.
-    elif max_prob - success_probs.get('Simplecard', 0) < 0.1 and max_prob != success_probs.get('Simplecard', 0):
-        best_psp = 'Simplecard'
-        explanation = "Die Erfolgswahrscheinlichkeit von Simplecard ist um weniger als 0,1 schlechter als die höchste, wähle Simplecard."
-
-    # Regel 5: Wenn UK_Card die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('UK_Card', 0) == max_prob:
-        best_psp = 'UK_Card'
-        explanation = "UK_Card hat die höchste Erfolgswahrscheinlichkeit, wähle UK_Card."
-
-    # Regel 6: Wenn die Erfolgswahrscheinlichkeit von UK_Card um weniger als 0,1 schlechter ist als die höchste
-    elif max_prob - success_probs.get('UK_Card', 0) < 0.1 and max_prob != success_probs.get('UK_Card', 0):
-        best_psp = 'UK_Card'
-        explanation = "Die Erfolgswahrscheinlichkeit von UK_Card ist um weniger als 0,1 schlechter als die höchste, wähle UK_Card."
-
-    # Regel 7: Wenn Moneycard die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('Moneycard', 0) == max_prob:
-        best_psp = 'Moneycard'
-        explanation = "Moneycard hat die höchste Erfolgswahrscheinlichkeit, wähle Moneycard."
-
-    # Regel 8: Wenn die Erfolgswahrscheinlichkeit von Moneycard um weniger als 0,1 schlechter ist als die höchste
-    elif max_prob - success_probs.get('Moneycard', 0) < 0.1 and max_prob != success_probs.get('Moneycard', 0):
-        best_psp = 'Moneycard'
-        explanation = "Die Erfolgswahrscheinlichkeit von Moneycard ist um weniger als 0,1 schlechter als die höchste, wähle Moneycard."
-
-    # Regel 9: Wenn Goldcard die höchste Erfolgswahrscheinlichkeit hat
-    elif success_probs.get('Goldcard', 0) == max_prob:
-        best_psp = 'Goldcard'
-        explanation = "Goldcard hat die höchste Erfolgswahrscheinlichkeit, wähle Goldcard."
-
-    # Standardauswahl, falls keine Regel greift (sollte nicht vorkommen)
+    # Regel C: Alle Erfolgswahrscheinlichkeiten unter 0.8
     else:
-        best_psp = sorted_probs[0][0]
-        explanation = f"Standardregel angewandt, wähle den PSP mit der höchsten Erfolgswahrscheinlichkeit ({best_psp})."
+        weighted_costs = {
+            psp: costs[psp]['success_fee'] / success_probs[psp]
+            for psp in success_probs.keys()
+        }
+        best_psp = min(weighted_costs, key=weighted_costs.get)
+        explanation = f"Alle Erfolgswahrscheinlichkeiten liegen unter 0.8. {best_psp} bietet das beste Verhältnis aus Kosten und Erfolgswahrscheinlichkeit."
 
     return best_psp, explanation
 
 # Beispieltransaktion bewerten
 example_transaction = data.sample(1)
 optimal_psp, explanation = assign_psp(example_transaction)
+print("\nSpezifische Erfolgswahrscheinlichkeit für die Beispieltransaktion:")
+for psp, prob in assign_psp(example_transaction)[0].items():
+    print(f"{psp}: {prob:.4f}")
+
 print("\nOptimaler PSP für die Beispieltransaktion:")
 print(optimal_psp)
 print("Erklärung:", explanation)
