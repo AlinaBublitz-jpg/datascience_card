@@ -6,23 +6,23 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report, confusion_matrix
 
-# Daten laden
+# Load the dataset from an Excel file
 file_path = './Excel1.xlsx'
 data = pd.read_excel(file_path, engine='openpyxl')
 
-# Sicherstellen, dass die Zielvariable 'success' korrekt formatiert ist
+# Ensure the target variable 'success' is formatted as integers (0 and 1)
 data['success'] = data['success'].astype(int)
 
-# Zeitstempel auf Minuten reduzieren
-data['tmsp_min'] = pd.to_datetime(data['tmsp']).dt.floor('min')  # Zeitstempel auf Minuten runden
+# Round the timestamps to the nearest minute for consistency
+data['tmsp_min'] = pd.to_datetime(data['tmsp']).dt.floor('min')
 
-# Gruppierungsschlüssel erstellen
+# Generate a unique grouping key based on timestamp, country, and amount
 data['group_key'] = data['tmsp_min'].astype(str) + '_' + data['country'] + '_' + data['amount'].astype(str)
 
-# Anzahl der Versuche berechnen
+# Calculate the number of attempts for each transaction group
 data['attempt_count'] = data.groupby('group_key')['group_key'].transform('count')
 
-# Gebühren hinzufügen
+# Add fees for each Payment Service Provider (PSP)
 fees = {
     'Moneycard': {'success_fee': 5, 'failure_fee': 2},
     'Goldcard': {'success_fee': 10, 'failure_fee': 5},
@@ -32,101 +32,101 @@ fees = {
 data['success_fee'] = data['PSP'].apply(lambda x: fees[x]['success_fee'])
 data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 
-# PSP-spezifische Erfolgsrate berechnen und hinzufügen
+# Calculate the success rate for each PSP and map it to the dataset
 psp_success_rate = data.groupby('PSP')['success'].mean()
 data['psp_success_rate'] = data['PSP'].map(psp_success_rate)
 
-# Zeitmerkmale hinzufügen
+# Extract the hour from the timestamp as a new feature
 data['hour'] = pd.to_datetime(data['tmsp']).dt.hour
 
-# One-Hot-Encoding für Länder
-data['original_country'] = data['country']  # Originalspalte sichern
+# Perform One-Hot-Encoding for the 'country' variable
+data['original_country'] = data['country']  # Preserve the original column
 data = pd.get_dummies(data, columns=['country'], drop_first=False)
 
-# Aggregation inklusive Dummy-Spalten
+# Aggregate data by group key, keeping only the first occurrence of each feature
 aggregation = {
-    'tmsp': 'first',
-    'amount': 'first',
-    'success': 'max',
-    'PSP': 'first',
-    '3D_secured': 'first',
-    'card': 'first',
-    'attempt_count': 'first',
-    'success_fee': 'first',
-    'failure_fee': 'first',
-    'psp_success_rate': 'first',
-    'hour': 'first',
-    'original_country': 'first'
+    'tmsp': 'first',  # Keep the first timestamp for each group
+    'amount': 'first',  # Keep the first transaction amount
+    'success': 'max',  # Use the maximum value for success (binary)
+    'PSP': 'first',  # Keep the first PSP
+    '3D_secured': 'first',  # Keep the first 3D secured value
+    'card': 'first',  # Keep the first card type
+    'attempt_count': 'first',  # Keep the first attempt count
+    'success_fee': 'first',  # Keep the first success fee
+    'failure_fee': 'first',  # Keep the first failure fee
+    'psp_success_rate': 'first',  # Keep the first PSP success rate
+    'hour': 'first',  # Keep the first hour
+    'original_country': 'first'  # Keep the original country
 }
-# Füge alle Dummy-Spalten zur Aggregation hinzu
+# Include all dummy columns for aggregation
 for col in data.columns:
     if col.startswith('country_'):
         aggregation[col] = 'first'
 
 data = data.groupby('group_key').agg(aggregation).reset_index()
 
-# Temporäre Spalten entfernen
+# Remove temporary columns
 data = data.drop(columns=['group_key', 'tmsp_min'], errors='ignore')
 
-# Bereinigte und aggregierte Daten ausgeben
-print("\nBereinigte und aggregierte Daten mit den relevanten Feldern, Gebühren und Anzahl der Versuche:")
+# Print the cleaned and aggregated data
+print("\nCleaned and aggregated data with relevant fields, fees, and attempt counts:")
 print(data[['tmsp', 'original_country', 'attempt_count']].head(6))
 
-# Finale Features (ohne 'success')
+# Final features (excluding 'success')
 final_features = ['psp_success_rate', '3D_secured', 'hour', 'attempt_count', 'amount', 'country_Germany']
 
-# Einzigartige PSP-Werte extrahieren
+# Extract unique PSP values
 psps = data['PSP'].unique()
 
-# Initialisiere ein Dictionary für Ergebnisse
+# Initialize dictionaries for storing results and success probabilities
 results = {}
 psp_success_probabilities = {}
 
-# Modelle für jede PSP trainieren und bewerten
+# Train and evaluate models for each PSP
 for psp in psps:
-    # Filter für den aktuellen PSP
+    # Filter data for the current PSP
     psp_data = data[data['PSP'] == psp]
 
-    # Features (X) und Zielvariable (y) definieren
-    X = psp_data[final_features]  # Nur Features, 'success' nicht enthalten
-    y = psp_data['success']      # Zielvariable
+    # Define features (X) and target variable (y)
+    X = psp_data[final_features]  # Only use features, exclude 'success'
+    y = psp_data['success']  # Target variable
 
-    # Trainings- und Testdaten aufteilen
+    # Split the data into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
-    # Pipeline erstellen: Skalierung + Logistische Regression
+    # Create a pipeline for scaling and logistic regression
     pipeline = Pipeline([
-        ('scaler', StandardScaler()),
-        ('model', LogisticRegression(random_state=42, max_iter=1000))
+        ('scaler', StandardScaler()),  # Scale the features
+        ('model', LogisticRegression(random_state=42, max_iter=1000))  # Logistic regression
     ])
 
-    # Hyperparameter-Tuning mit GridSearchCV
+    # Perform hyperparameter tuning with GridSearchCV
     param_grid = {
-        'model__C': [0.1, 1, 10, 100],  # Regularisierungsparameter
-        'model__penalty': ['l1', 'l2'],  # L1 oder L2 Regularisierung
-        'model__solver': ['liblinear', 'saga']  # Optimierungsmethoden
+        'model__C': [0.1, 1, 10, 100],  # Regularization parameter
+        'model__penalty': ['l1', 'l2'],  # Regularization type
+        'model__solver': ['liblinear', 'saga']  # Optimization methods
     }
 
     grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring='roc_auc')
     grid_search.fit(X_train, y_train)
 
-    # Bestes Modell aus GridSearch verwenden
+    # Use the best model from GridSearch
     best_model = grid_search.best_estimator_
 
-    # Vorhersagen auf Testdaten
+    # Make predictions on the test data
     y_pred = best_model.predict(X_test)
-    y_pred_proba = best_model.predict_proba(X_test)[:, 1]  # Wahrscheinlichkeiten für die positive Klasse (1)
+    y_pred_proba = best_model.predict_proba(X_test)[:, 1]  # Probabilities for the positive class (1)
 
-    # Erfolgswahrscheinlichkeit speichern
+    # Store the success probability for the current PSP
     psp_success_probabilities[psp] = y_pred_proba.mean()
 
-    # Evaluation
+    # Evaluate the model
     auc = roc_auc_score(y_test, y_pred_proba)
     accuracy = accuracy_score(y_test, y_pred)
     report = classification_report(y_test, y_pred, zero_division=0)
     matrix = confusion_matrix(y_test, y_pred)
 
-    # Ergebnisse speichern
+    # Store results
     results[psp] = {
         'AUC': auc,
         'Accuracy': accuracy,
@@ -135,9 +135,9 @@ for psp in psps:
         'Model': best_model
     }
 
-    # Ergebnisse ausgeben
-    print(f"\nModell für PSP: {psp}")
-    print(f"Beste Hyperparameter: {grid_search.best_params_}")
+    # Print results for the current PSP
+    print(f"\nModel for PSP: {psp}")
+    print(f"Best Hyperparameters: {grid_search.best_params_}")
     print(f"AUC: {auc:.2f}")
     print(f"Accuracy: {accuracy:.2f}")
     print("Classification Report:")
@@ -145,110 +145,106 @@ for psp in psps:
     print("Confusion Matrix:")
     print(matrix)
 
-# Erfolgswahrscheinlichkeiten für jedes PSP ausgeben
-print("\nErfolgswahrscheinlichkeiten für jedes PSP:")
+# Print success probabilities for each PSP
+print("\nSuccess probabilities for each PSP:")
 for psp, prob in psp_success_probabilities.items():
-    print(f"{psp}: Erfolgswahrscheinlichkeit = {prob:.2f}")
+    print(f"{psp}: Success Probability = {prob:.2f}")
 
-# Entscheidung
-# Zeile auswählen (z. B. Zeile mit Index 19)
+# Select a row (e.g., row with index 19)
 selected_row_index = 19
 selected_row = data.iloc[selected_row_index]
 selected_features = selected_row[final_features].values.reshape(1, -1)
 
-# Erfolgswahrscheinlichkeit für jeden PSP berechnen
+# Calculate success probabilities for each PSP for the selected row
 psp_success_probabilities_row = {}
 
 for psp in psps:
-    # Filter für den aktuellen PSP
+    # Filter data for the current PSP
     psp_data = data[data['PSP'] == psp]
 
-    # Features (X) und Zielvariable (y) definieren
+    # Define features (X) and target variable (y)
     X = psp_data[final_features]
     y = psp_data['success']
 
-    # Prüfen, ob mindestens zwei Klassen existieren
+    # Check if there are at least two classes in the target variable
     if len(y.unique()) < 2:
-        print(f"Nicht genug Klassen für PSP: {psp}")
+        print(f"Not enough classes for PSP: {psp}")
         continue
 
-    # Trainings- und Testdaten aufteilen
+    # Split data into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
-    # Pipeline erstellen: Skalierung + Logistische Regression
+    # Create a pipeline for scaling and logistic regression
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('model', LogisticRegression(random_state=42, max_iter=1000))
     ])
 
-    # Hyperparameter-Tuning mit GridSearchCV
+    # Perform hyperparameter tuning using GridSearchCV
     param_grid = {
-        'model__C': [0.1, 1, 10, 100],
-        'model__penalty': ['l1', 'l2'],
-        'model__solver': ['liblinear', 'saga']
+        'model__C': [0.1, 1, 10, 100],  # Regularization strength
+        'model__penalty': ['l1', 'l2'],  # L1 or L2 regularization
+        'model__solver': ['liblinear', 'saga']  # Optimization solvers
     }
 
     grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring='roc_auc')
     grid_search.fit(X_train, y_train)
 
-    # Bestes Modell aus GridSearch verwenden
+    # Use the best model from GridSearch
     best_model = grid_search.best_estimator_
 
-    # Erfolgswahrscheinlichkeit für die ausgewählte Zeile berechnen
+    # Calculate success probability for the selected row
     selected_features_scaled = best_model.named_steps['scaler'].transform(selected_features)
     success_probability = best_model.predict_proba(selected_features_scaled)[:, 1][0]
     psp_success_probabilities_row[psp] = success_probability
 
-
-
-
-# Erfolgswahrscheinlichkeiten ausgeben
-print("\nErfolgswahrscheinlichkeiten für die ausgewählte Zeile:")
+# Print success probabilities for the selected row
+print("\nSuccess probabilities for the selected row:")
 for psp, prob in psp_success_probabilities_row.items():
     print(f"{psp}: {prob:.4f}")
 
-# Liste der Wahrscheinlichkeiten extrahieren
+# Extract the list of probabilities
 all_probs = list(psp_success_probabilities_row.values())
 
-# Initialisiere die Entscheidung als None
+# Initialize decision as None
 chosen_psp = None
 
-# Regel 1: Wenn alle Wahrscheinlichkeiten exakt 0 sind, wähle Simplecard
+# Rule 1: If all probabilities are exactly 0, choose Simplecard
 if all(prob == 0 for prob in all_probs):
     chosen_psp = 'Simplecard'
 
 else:
-    # Maximale Erfolgswahrscheinlichkeit
+    # Determine the maximum success probability
     max_prob = max(all_probs)
 
-    # Regel 2: Wenn Simplecard die höchste Erfolgswahrscheinlichkeit hat oder um weniger als 0,1 schlechter ist als der Rest, wähle Simplecard
+    # Rule 2: If Simplecard has the highest probability or is less than 0.1 worse than the highest, choose Simplecard
     if 'Simplecard' in psp_success_probabilities_row:
         simplecard_prob = psp_success_probabilities_row['Simplecard']
         if simplecard_prob == max_prob or max_prob - simplecard_prob < 0.1:
             chosen_psp = 'Simplecard'
 
-    # Regel 3: Wenn UK_Card die höchste Erfolgswahrscheinlichkeit hat oder um weniger als 0,1 schlechter ist als der Rest, wähle UK_Card
+    # Rule 3: If UK_Card has the highest probability or is less than 0.1 worse than the highest, choose UK_Card
     if chosen_psp is None and 'UK_Card' in psp_success_probabilities_row:
         uk_card_prob = psp_success_probabilities_row['UK_Card']
         if uk_card_prob == max_prob or max_prob - uk_card_prob < 0.1:
             chosen_psp = 'UK_Card'
 
-    # Regel 4: Wenn Moneycard die höchste Erfolgswahrscheinlichkeit hat oder um weniger als 0,1 schlechter ist als der Rest, wähle Moneycard
+    # Rule 4: If Moneycard has the highest probability or is less than 0.1 worse than the highest, choose Moneycard
     if chosen_psp is None and 'Moneycard' in psp_success_probabilities_row:
         moneycard_prob = psp_success_probabilities_row['Moneycard']
         if moneycard_prob == max_prob or max_prob - moneycard_prob < 0.1:
             chosen_psp = 'Moneycard'
 
-    # Regel 5: Wenn Goldcard die höchste Erfolgswahrscheinlichkeit hat, wähle Goldcard
+    # Rule 5: If Goldcard has the highest probability, choose Goldcard
     if chosen_psp is None and 'Goldcard' in psp_success_probabilities_row:
         goldcard_prob = psp_success_probabilities_row['Goldcard']
         if goldcard_prob == max_prob:
             chosen_psp = 'Goldcard'
 
-# Fallback: Wenn keine Regel zutrifft, wähle Simplecard
+# Fallback: If no rule applies, choose Simplecard
 if chosen_psp is None:
     chosen_psp = 'Simplecard'
 
-# Entscheidung ausgeben
-print(f"\nEntscheidung: Verwenden Sie {chosen_psp} als PSP.")
+# Print the decision
+print(f"\nDecision: Use {chosen_psp} as the PSP.")
 

@@ -7,18 +7,18 @@ from sklearn.preprocessing import StandardScaler
 import shap
 import matplotlib.pyplot as plt
 
-# Daten laden
+# Load the dataset from the specified Excel file
 file_path = './Excel1.xlsx'
 data = pd.read_excel(file_path, engine='openpyxl')
 
-# Sicherstellen, dass die Zielvariable 'success' korrekt formatiert ist
+# Ensure the target variable 'success' is correctly formatted as integers
 data['success'] = data['success'].astype(int)
 
-# Schritt 1: PSP-spezifische Merkmale
+# Step 1: Calculate PSP-specific features
 psp_success_rate = data.groupby('PSP')['success'].mean()
 data['psp_success_rate'] = data['PSP'].map(psp_success_rate)
 
-# Gebührenstruktur hinzufügen
+# Add fee structure based on PSP
 fees = {
     'Moneycard': {'success_fee': 5, 'failure_fee': 2},
     'Goldcard': {'success_fee': 10, 'failure_fee': 5},
@@ -28,112 +28,112 @@ fees = {
 data['success_fee'] = data['PSP'].apply(lambda x: fees[x]['success_fee'])
 data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 
-# Schritt 2: Transaktionsspezifische Merkmale
-data['hour'] = pd.to_datetime(data['tmsp']).dt.hour
-data['weekday'] = pd.to_datetime(data['tmsp']).dt.weekday
-data['is_weekend'] = data['weekday'].apply(lambda x: 1 if x >= 5 else 0)
+# Step 2: Transaction-specific features
+data['hour'] = pd.to_datetime(data['tmsp']).dt.hour  # Extract hour from the timestamp
+data['weekday'] = pd.to_datetime(data['tmsp']).dt.weekday  # Extract weekday from the timestamp
+data['is_weekend'] = data['weekday'].apply(lambda x: 1 if x >= 5 else 0)  # Flag weekends
 
-# Hinzufügen von attempt_count
+# Add the number of transaction attempts
 data['attempt_count'] = data.groupby(['tmsp', 'country', 'amount']).cumcount() + 1
 
-# One-Hot-Encoding für kategorische Variablen
+# Perform one-hot encoding for categorical variables
 data = pd.get_dummies(data, columns=['country', 'card'], drop_first=False)
 
-# Schritt 3: Aktualisiertes Feature-Set
+# Step 3: Define updated feature set
 selected_features = [
                         'psp_success_rate', 'failure_fee', 'success_fee', '3D_secured', 'amount',
                         'hour', 'is_weekend', 'attempt_count'
                     ] + [col for col in data.columns if col.startswith('country_') or col.startswith('card_')]
 
-# Zielvariable und Features definieren
+# Define features (X) and target variable (y)
 X = data[selected_features]
 y = data['success']
 
-# Feature-Scaling
+# Feature scaling
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-# Schritt 4: Random Forest Feature Importance
+# Step 4: Random Forest for feature importance
 print("\nRandom Forest Feature Importance:")
 rf = RandomForestClassifier(random_state=42)
 rf.fit(X_scaled, y)
 rf_importance = pd.Series(rf.feature_importances_, index=selected_features).sort_values(ascending=False)
 print(rf_importance)
 
-# Visualisierung der Feature-Wichtigkeit
+# Visualize feature importance
 plt.figure(figsize=(10, 6))
 rf_importance.plot(kind='bar', color='skyblue')
 plt.title('Feature Importance (Random Forest)')
 plt.ylabel('Importance')
 plt.show()
 
-# Schritt 5: SHAP-Werte mit KernelExplainer
-print("\nSHAP-Werte mit KernelExplainer:")
+# Step 5: SHAP values using KernelExplainer
+print("\nSHAP Values with KernelExplainer:")
 try:
-    # Sample-Daten (nur 100 Zeilen für schnellere Berechnung)
+    # Use a sample of 100 rows for faster SHAP computation
     sample_data = pd.DataFrame(X_scaled[:100], columns=X.columns)
 
-    # Modellvorhersage-Funktion für KernelExplainer
+    # Define prediction function for the explainer
     def model_predict(data):
-        return rf.predict_proba(data)[:, 1]  # Wahrscheinlichkeiten für Klasse 1
+        return rf.predict_proba(data)[:, 1]  # Probabilities for class 1
 
-    # KernelExplainer erstellen
+    # Create KernelExplainer
     explainer = shap.KernelExplainer(model_predict, sample_data)
 
-    # SHAP-Werte berechnen
+    # Compute SHAP values
     shap_values = explainer.shap_values(sample_data)
 
-    # Sicherstellen, dass die Dimensionen passen
+    # Adjust SHAP values for use
     shap_values_to_use = shap_values[0] if isinstance(shap_values, list) else shap_values
 
-    # SHAP-Feature-Namen korrigieren (falls numpy-Array verwendet wurde)
+    # Correct SHAP feature names
     shap_features = sample_data.columns.tolist()
 
-    # Visualisierung der SHAP-Werte
+    # Visualize SHAP values
     shap.summary_plot(shap_values_to_use, sample_data, feature_names=shap_features, plot_type="bar")
 
-    # SHAP-Werte speichern
+    # Save SHAP values to a CSV file
     shap_df = pd.DataFrame(shap_values_to_use, columns=shap_features, index=sample_data.index)
     shap_df.to_csv('./shap_values_kernel.csv', index=False)
-    print("\nSHAP-Werte wurden erfolgreich berechnet und gespeichert (shap_values_kernel.csv).")
+    print("\nSHAP values successfully computed and saved (shap_values_kernel.csv).")
 
 except Exception as e:
-    print(f"Fehler bei der SHAP-Berechnung: {e}")
+    print(f"Error during SHAP computation: {e}")
 
-# Schritt 6: Lasso-Regression für Feature-Auswahl
-print("\nFeature-Auswahl mit Lasso-Regression:")
+# Step 6: Feature selection with Lasso regression
+print("\nFeature Selection with Lasso Regression:")
 lasso = LassoCV(cv=5, random_state=42).fit(X_scaled, y)
 lasso_coefficients = pd.Series(lasso.coef_, index=selected_features).sort_values(ascending=False)
 lasso_features = lasso_coefficients[lasso_coefficients != 0].index.tolist()
 print(lasso_coefficients[lasso_coefficients != 0])
 
-# Schritt 7: PCA
+# Step 7: Principal Component Analysis (PCA)
 print("\nPrincipal Component Analysis (PCA):")
 pca = PCA(n_components=5)
 X_pca = pca.fit_transform(X_scaled)
-print(f"Erklärte Varianz durch die ersten 5 Hauptkomponenten: {pca.explained_variance_ratio_.sum():.4f}")
+print(f"Explained variance by the first 5 components: {pca.explained_variance_ratio_.sum():.4f}")
 
-# Visualisierung der PCA-Komponenten
+# Visualize explained variance by PCA components
 plt.figure(figsize=(8, 6))
 plt.bar(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_, color='green')
-plt.title('Erklärte Varianz durch PCA-Komponenten')
-plt.xlabel('Komponenten')
-plt.ylabel('Erklärte Varianz')
+plt.title('Explained Variance by PCA Components')
+plt.xlabel('Components')
+plt.ylabel('Explained Variance')
 plt.show()
 
-# Zusammenfassung der ausgewählten Features
+# Summarize selected features
 rf_features = rf_importance.head(10).index.tolist()
-shap_features = sample_data.columns.tolist()  # Alle Features, die SHAP berücksichtigt
+shap_features = sample_data.columns.tolist()  # All features considered by SHAP
 final_features = list(set(rf_features) & set(lasso_features) & set(shap_features))
 
-# Hinzufügen von attempt_count zu den finalen Features
+# Ensure 'attempt_count' is included in the final features
 final_features_with_attempt_count = list(set(final_features + ['attempt_count']))
 
-print("\nZusammenfassung der ausgewählten Features:")
-print(f"Random Forest Top-10 Features: {rf_features}")
-print(f"Lasso-Regression Features: {lasso_features}")
-print(f"Gemeinsame Features (Finale Auswahl): {final_features_with_attempt_count}")
+print("\nSummary of Selected Features:")
+print(f"Top-10 Features from Random Forest: {rf_features}")
+print(f"Features from Lasso Regression: {lasso_features}")
+print(f"Final Selected Features: {final_features_with_attempt_count}")
 
-# Speichern des erweiterten Datensatzes
+# Save the dataset with the final selected features
 data[final_features_with_attempt_count].to_csv('./final_selected_features_data.csv', index=False)
-print("\nDatensatz mit den finalen ausgewählten Features wurde gespeichert (final_selected_features_data.csv).")
+print("\nDataset with final selected features saved (final_selected_features_data.csv).")
