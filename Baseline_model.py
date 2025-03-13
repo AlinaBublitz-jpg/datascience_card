@@ -1,11 +1,12 @@
 import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import confusion_matrix, accuracy_score, roc_auc_score, precision_score, recall_score, f1_score, precision_recall_curve
 import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import numpy as np
 
 # Pfad zur Excel-Datei
 file_path = './Excel1.xlsx'
@@ -33,28 +34,32 @@ X = data[['psp_success_rate']]  # Baseline-Modell nutzt nur die Erfolgsrate
 y = data['success']
 
 # **Daten in Trainings- und Testdaten teilen**
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+# Daten in Trainings- und Testdaten teilen, dabei auch die Originalindices behalten
+indices = data.index
+X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
+    X, y, indices, test_size=0.3, random_state=42, stratify=y)
 
-# Pipeline für Skalierung und Training des Modells erstellen
-pipeline = Pipeline([
-    ('scaler', StandardScaler()),  # Features skalieren
-    ('model', LogisticRegression(random_state=42, max_iter=1000))  # Logistic Regression Modell
-])
+# Reines Baseline-Modell: Vorhersage der Mehrheitsklasse aus den Trainingsdaten
+majority_class = y_train.mode()[0]
+baseline_probability = y_train.mean()  # Anteil von Success=1 in den Trainingsdaten
 
-# Modell mit Trainingsdaten trainieren
-pipeline.fit(X_train, y_train)
-
-# Vorhersagen auf Testdaten durchführen
-y_pred = pipeline.predict(X_test)
-y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
+# Vorhersagen auf Testdaten (immer die Mehrheitsklasse)
+y_pred = [majority_class] * len(y_test)
+y_pred_proba = [baseline_probability] * len(y_test)  # konstante Wahrscheinlichkeit
 
 # Gesamtmetriken berechnen
 accuracy = accuracy_score(y_test, y_pred)
-auc = roc_auc_score(y_test, y_pred_proba)
+# Da alle Wahrscheinlichkeiten konstant sind, ist der AUC-Wert nicht sinnvoll berechenbar;
+# im Baseline-Fall wird häufig ein AUC-Wert von 0.5 angenommen.
+try:
+    auc = roc_auc_score(y_test, y_pred_proba)
+except Exception as e:
+    auc = 0.5
 precision = precision_score(y_test, y_pred, zero_division=0)
 recall = recall_score(y_test, y_pred, zero_division=0)
 f1 = f1_score(y_test, y_pred)
 conf_matrix = confusion_matrix(y_test, y_pred)
+
 
 # Gesamtmetriken ausgeben
 print("\nGesamtmetriken des Modells:")
@@ -66,25 +71,32 @@ print(f"F1-Score: {f1:.2f}")
 print("Confusion Matrix:")
 print(conf_matrix)
 
-# Metriken pro PSP berechnen
-print("\nMetriken pro PSP:")
+# PSP-spezifische Metriken ausschließlich auf den Testdaten berechnen
+print("\nMetriken pro PSP (auf Testdaten):")
 for psp in data['PSP'].unique():
-    psp_data = data[data['PSP'] == psp]  # Daten für den aktuellen PSP filtern
-    if len(psp_data['success'].unique()) > 1:  # Sicherstellen, dass beide Klassen vorhanden sind
-        psp_X = psp_data[['psp_success_rate']]
-        psp_y = psp_data['success']
+    # Filtere Testindices für den aktuellen PSP
+    psp_indices = [i for i in idx_test if data.loc[i, 'PSP'] == psp]
+    if not psp_indices:
+        print(f"\n{psp}: Keine Testdaten vorhanden.")
+        continue
 
-        # **Vorhersagen durchführen nur mit dem Modell auf Testdaten**
-        psp_pred = pipeline.predict(psp_X)
-        psp_pred_proba = pipeline.predict_proba(psp_X)[:, 1]
+    psp_y_test = data.loc[psp_indices, 'success']
+    # Baseline-Vorhersagen für den aktuellen PSP (immer die Mehrheitsklasse)
+    psp_pred = [majority_class] * len(psp_y_test)
+    psp_pred_proba = [baseline_probability] * len(psp_y_test)
 
-        # Metriken berechnen
-        accuracy_psp = accuracy_score(psp_y, psp_pred)
-        auc_psp = roc_auc_score(psp_y, psp_pred_proba)
-        precision_psp = precision_score(psp_y, psp_pred, zero_division=0)
-        recall_psp = recall_score(psp_y, psp_pred, zero_division=0)
-        f1_psp = f1_score(psp_y, psp_pred)
-        conf_matrix_psp = confusion_matrix(psp_y, psp_pred)
+    # Überprüfen, ob beide Klassen in den Testdaten vorhanden sind
+    if len(psp_y_test.unique()) > 1:
+        accuracy_psp = accuracy_score(psp_y_test, psp_pred)
+        try:
+            auc_psp = roc_auc_score(psp_y_test, psp_pred_proba)
+        except Exception as e:
+            auc_psp = 0.5
+        precision_psp = precision_score(psp_y_test, psp_pred, zero_division=0)
+        recall_psp = recall_score(psp_y_test, psp_pred, zero_division=0)
+        f1_psp = f1_score(psp_y_test, psp_pred)
+        conf_matrix_psp = confusion_matrix(psp_y_test, psp_pred)
+
 
         print(f"\n{psp}:")
         print(f"  Accuracy: {accuracy_psp:.2f}")
@@ -98,13 +110,66 @@ for psp in data['PSP'].unique():
 
 # Precision-Recall-Kurve berechnen und plotten
 precision_vals, recall_vals, thresholds = precision_recall_curve(y_test, y_pred_proba)
-
 plt.figure(figsize=(8, 6))
 plt.plot(recall_vals, precision_vals, marker='.', label='Precision-Recall Curve')
 plt.xlabel('Recall')
 plt.ylabel('Precision')
-plt.title('Precision-Recall Curve (Logistic Regression)')
+plt.title('Precision-Recall Curve (Baseline Model)')
 plt.legend()
 plt.grid()
 plt.show()
 
+
+
+# Confusion Matrix als Heatmap plotten
+def plot_confusion_matrix_with_labels(y_true, y_pred, title='Confusion Matrix (Baseline Model)'):
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+
+# Erstelle ein 2D-Array für die Heatmap
+    cm_array = np.array([[tn, fp],
+                         [fn, tp]])
+
+    plt.figure(figsize=(5, 4))
+    ax = sns.heatmap(cm_array, annot=True, fmt='d', cmap='Blues', cbar=False,
+                     xticklabels=['Predicted: 0', 'Predicted: 1'],
+                     yticklabels=['Actual: 0', 'Actual: 1'])
+
+    plt.title("Confusion Matrix - Heatmap")
+    plt.xlabel("Vorhergesagte Klasse")
+    plt.ylabel("Wahre Klasse")
+
+    # Füge zusätzliche Labels in die Heatmap ein
+    ax.text(0.3, 0.7, "TN", color="black", ha="center", va="center", transform=ax.transAxes, fontsize=12)
+    ax.text(0.7, 0.7, "FP", color="black", ha="center", va="center", transform=ax.transAxes, fontsize=12)
+    ax.text(0.3, 0.25, "FN", color="black", ha="center", va="center", transform=ax.transAxes, fontsize=12)
+    ax.text(0.7, 0.25, "TP", color="black", ha="center", va="center", transform=ax.transAxes, fontsize=12)
+
+    plt.show()
+
+
+
+
+
+
+plt.figure(figsize=(5, 4))
+sns.countplot(x=y_test)
+plt.title("Verteilung der Zielvariable im Testset")
+plt.xlabel("Success (0 = Fail, 1 = Success)")
+plt.ylabel("Anzahl Transaktionen")
+plt.show()
+
+
+
+# PSP-spezifische Erfolgsraten im Testset
+test_data = data.loc[idx_test].copy()
+
+psp_success_test = test_data.groupby('PSP')['success'].mean().reset_index()
+
+plt.figure(figsize=(6, 4))
+sns.barplot(data=psp_success_test, x='PSP', y='success')
+plt.title('PSP-spezifische Erfolgsraten (Testset)')
+plt.xlabel('Payment Service Provider')
+plt.ylabel('Durchschnittliche Erfolgsrate (0-1)')
+plt.ylim(0, 1)
+plt.show()

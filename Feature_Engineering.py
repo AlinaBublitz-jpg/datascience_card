@@ -6,6 +6,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import shap
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Laden der Daten aus einer Excel-Datei
 file_path = './Excel1.xlsx'
@@ -32,8 +33,6 @@ data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 data['hour'] = pd.to_datetime(data['tmsp']).dt.hour  # Extract hour from the timestamp
 data['weekday'] = pd.to_datetime(data['tmsp']).dt.weekday  # Extract weekday from the timestamp
 data['is_weekend'] = data['weekday'].apply(lambda x: 1 if x >= 5 else 0)  # Flag weekends
-
-
 data['attempt_count'] = data.groupby(['tmsp', 'country', 'amount']).cumcount() + 1
 
 # One-Hot-Encoding für kategoriale Variablen
@@ -45,7 +44,7 @@ selected_features = [
                         'hour', 'is_weekend', 'attempt_count'
                     ] + [col for col in data.columns if col.startswith('country_') or col.startswith('card_')]
 
-#  Definieren der Eingangsvariablen (X) und der Zielvariable (y)
+# Definieren der Eingangsvariablen (X) und der Zielvariable (y)
 X = data[selected_features]
 y = data['success']
 
@@ -67,35 +66,43 @@ plt.title('Feature Importance (Random Forest)')
 plt.ylabel('Importance')
 plt.show()
 
-# Berechnung der SHAP-Werte mit KernelExplainer
-print("\nSHAP Values with KernelExplainer:")
+# Berechnung der SHAP-Werte mit TreeExplainer
+print("\nSHAP Values with TreeExplainer:")
 try:
     # Verwende eine Stichprobe von 100 Datenpunkten für eine schnellere Berechnung
     sample_data = pd.DataFrame(X_scaled[:100], columns=X.columns)
 
-    # Definiere eine Vorhersagefunktion für den SHAP-Erklärer
-    def model_predict(data):
-        return rf.predict_proba(data)[:, 1]  # Probabilities for class 1
-
-    # Erstellen des KernelExplainers für das Modell
-    explainer = shap.KernelExplainer(model_predict, sample_data)
-
+    # TreeExplainer ist für baumbasierte Modelle wie RandomForest effizienter
+    explainer = shap.TreeExplainer(rf)
     shap_values = explainer.shap_values(sample_data)
 
-    shap_values_to_use = shap_values[0] if isinstance(shap_values, list) else shap_values
+    # Überprüfen, ob shap_values ein Listentyp ist oder als Array mit 3 Dimensionen zurückgegeben wird
+    if isinstance(shap_values, list):
+        shap_values_to_use = shap_values[1]  # für Klasse 1
+    elif shap_values.ndim == 3:
+        shap_values_to_use = shap_values[:, :, 1]
+    else:
+        shap_values_to_use = shap_values
 
     shap_features = sample_data.columns.tolist()
 
-    # Visualisierung SHAP-Werte
-    shap.summary_plot(shap_values_to_use, sample_data, feature_names=shap_features, plot_type="bar")
+    # Extrahiere Top-40%-SHAP-Features basierend auf dem durchschnittlichen absoluten SHAP-Wert
+    shap_importance = pd.DataFrame(shap_values_to_use, columns=shap_features).abs().mean()
+    num_top = int(np.ceil(0.4 * len(shap_importance)))
+    shap_top_features = shap_importance.sort_values(ascending=False).head(num_top).index.tolist()
+
+    # Visualisierung der SHAP-Werte
+    shap.summary_plot(shap_values_to_use, sample_data, feature_names=sample_data.columns, plot_type="bar")
 
     # Speichern der SHAP-Werte als CSV
-    shap_df = pd.DataFrame(shap_values_to_use, columns=shap_features, index=sample_data.index)
-    shap_df.to_csv('./shap_values_kernel.csv', index=False)
-    print("\nSHAP values successfully computed and saved (shap_values_kernel.csv).")
+    shap_df = pd.DataFrame(shap_values_to_use, columns=sample_data.columns, index=sample_data.index)
+    shap_df.to_csv('./shap_values_tree.csv', index=False)
+    print("\nSHAP values successfully computed and saved (shap_values_tree.csv).")
 
 except Exception as e:
-    print(f"Error during SHAP computation: {e}")
+    print(f"Error during SHAP computation: {e}. SHAP analysis will be skipped.")
+    # Falls ein Fehler auftritt, setzen wir shap_top_features auf alle Features
+    shap_top_features = X.columns.tolist()
 
 # Feature Selection mit Lasso Regression
 print("\nFeature Selection with Lasso Regression:")
@@ -110,7 +117,6 @@ pca = PCA(n_components=5)
 X_pca = pca.fit_transform(X_scaled)
 print(f"Explained variance by the first 5 components: {pca.explained_variance_ratio_.sum():.4f}")
 
-# Visualisierung der erklärten Varianz durch PCA-Komponenten
 plt.figure(figsize=(8, 6))
 plt.bar(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_, color='green')
 plt.title('Explained Variance by PCA Components')
@@ -120,15 +126,14 @@ plt.show()
 
 # Zusammenfassung der gewählten Features
 rf_features = rf_importance.head(10).index.tolist()
-shap_features = sample_data.columns.tolist()  # All features considered by SHAP
-final_features = list(set(rf_features) & set(lasso_features) & set(shap_features))
-
-# Sicherstellen, dass 'attempt_count' in den endgültigen Features enthalten ist
+# Hier verwenden wir die durch SHAP ermittelten Top-Features (Top 40% der Features)
+final_features = list(set(rf_features) & set(lasso_features) & set(shap_top_features))
 final_features_with_attempt_count = list(set(final_features + ['attempt_count']))
 
 print("\nSummary of Selected Features:")
 print(f"Top-10 Features from Random Forest: {rf_features}")
 print(f"Features from Lasso Regression: {lasso_features}")
+print(f"Top-40% SHAP Features: {shap_top_features}")
 print(f"Final Selected Features: {final_features_with_attempt_count}")
 
 # Speichern des finalen Datensatzes mit den gewählten Features
