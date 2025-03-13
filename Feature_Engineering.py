@@ -6,7 +6,8 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import shap
 import matplotlib.pyplot as plt
-import seaborn as sns
+from sklearn.model_selection import train_test_split
+
 
 # Laden der Daten aus einer Excel-Datei
 file_path = './Excel1.xlsx'
@@ -15,9 +16,20 @@ data = pd.read_excel(file_path, engine='openpyxl')
 # Sicherstellen, dass die Zielvariable 'success' als Integer gespeichert wird
 data['success'] = data['success'].astype(int)
 
-# Berechnung PSP-spezifischer Merkmale
-psp_success_rate = data.groupby('PSP')['success'].mean()
-data['psp_success_rate'] = data['PSP'].map(psp_success_rate)
+# Aufteilen des Datensatzes in Trainings- und Testdaten, um Data Leakage zu vermeiden
+train_data, test_data = train_test_split(data, test_size=0.3, random_state=42, stratify=data['success'])
+
+# Berechnung PSP-spezifischer Erfolgsraten nur auf den Trainingsdaten
+train_psp_success_rate = train_data.groupby('PSP')['success'].mean()
+
+# Anwenden der auf den Trainingsdaten berechneten Erfolgsraten auf beide Datensätze
+train_data['psp_success_rate'] = train_data['PSP'].map(train_psp_success_rate)
+test_data['psp_success_rate'] = test_data['PSP'].map(train_psp_success_rate)
+# Für PSPs, die im Testdatensatz nicht in den Trainingsdaten vorkommen, fülle mit dem globalen Mittelwert aus den Trainingsdaten
+test_data['psp_success_rate'] = test_data['psp_success_rate'].fillna(train_data['success'].mean())
+
+# Vereinigen der Trainings- und Testdaten, sodass in der weiteren Feature-Engineering-Pipeline keine Information aus den Testdaten in die PSP-Rate einfliest
+data = pd.concat([train_data, test_data]).sort_index()
 
 # Hinzufügen von PSP-spezifischen Gebührenstrukturen
 fees = {
@@ -87,9 +99,15 @@ try:
     shap_features = sample_data.columns.tolist()
 
     # Extrahiere Top-40%-SHAP-Features basierend auf dem durchschnittlichen absoluten SHAP-Wert
-    shap_importance = pd.DataFrame(shap_values_to_use, columns=shap_features).abs().mean()
-    num_top = int(np.ceil(0.4 * len(shap_importance)))
-    shap_top_features = shap_importance.sort_values(ascending=False).head(num_top).index.tolist()
+    shap_importance_df = pd.DataFrame(shap_values_to_use, columns=shap_features).abs().mean()
+    num_top = int(np.ceil(0.4 * len(shap_importance_df)))
+    shap_top_features = shap_importance_df.sort_values(ascending=False).head(num_top).index.tolist()
+
+    # Ausgabe der berechneten SHAP-Werte in der Konsole
+    print("\nSHAP Average Absolute Values:")
+    print(shap_importance_df)
+    print("\nTop 40% SHAP Features:")
+    print(shap_top_features)
 
     # Visualisierung der SHAP-Werte
     shap.summary_plot(shap_values_to_use, sample_data, feature_names=sample_data.columns, plot_type="bar")

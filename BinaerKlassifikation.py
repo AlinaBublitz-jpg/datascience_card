@@ -32,9 +32,27 @@ fees = {
 data['success_fee'] = data['PSP'].apply(lambda x: fees[x]['success_fee'])
 data['failure_fee'] = data['PSP'].apply(lambda x: fees[x]['failure_fee'])
 
-# Erfolgsrate für jede PSP berechnen und dem Datensatz zuordnen
-psp_success_rate = data.groupby('PSP')['success'].mean()
-data['psp_success_rate'] = data['PSP'].map(psp_success_rate)
+
+
+# Aufteilen des Datensatzes in Trainings- und Testdaten, um Data Leakage zu vermeiden
+train_data, test_data = train_test_split(data, test_size=0.3, random_state=42, stratify=data['success'])
+
+# Berechnung der PSP-Erfolgsraten ausschließlich auf den Trainingsdaten
+train_psp_success_rate = train_data.groupby('PSP')['success'].mean()
+
+# Anwenden der auf den Trainingsdaten berechneten Erfolgsraten auf beide Datensätze
+train_data['psp_success_rate'] = train_data['PSP'].map(train_psp_success_rate)
+test_data['psp_success_rate'] = test_data['PSP'].map(train_psp_success_rate)
+# Für PSPs, die im Testdatensatz nicht vorkommen, den globalen Mittelwert aus den Trainingsdaten verwenden
+test_data['psp_success_rate'] = test_data['psp_success_rate'].fillna(train_data['success'].mean())
+
+# Wiedervereinigung von Trainings- und Testdaten
+data = pd.concat([train_data, test_data]).sort_index()
+
+
+
+
+
 
 # Stunde aus dem Zeitstempel extrahieren
 data['hour'] = pd.to_datetime(data['tmsp']).dt.hour
@@ -80,19 +98,34 @@ psps = data['PSP'].unique()
 
 # Dictionaries zur Speicherung der Ergebnisse und Erfolgswahrscheinlichkeiten initialisieren
 results = {}
+
+# Definition der Features OHNE Erfolgsrate
+final_features_without_psp_rate = ['3D_secured', 'hour', 'attempt_count', 'amount', 'country_Germany']  # Achte auf korrekte Schreibweise!
+final_features = final_features_without_psp_rate + ['psp_success_rate']
+
 psp_success_probabilities = {}
 
-# Modelle für jede PSP trainieren und evaluieren
 for psp in psps:
-    # Daten für die aktuelle PSP filtern
     psp_data = data[data['PSP'] == psp]
+    if psp_data.empty:
+        continue
 
-    # Features (X) und Zielvariable (y) definieren
-    X = psp_data[final_features]
+    X = psp_data[final_features_without_psp_rate]  # Ohne Erfolgsrate
     y = psp_data['success']
 
-    # Trainings- und Testdaten aufteilen
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+    # Train/Test-Split mit stratify nur wenn möglich
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42,
+            stratify=y if len(y.unique()) >= 2 else None
+        )
+    except ValueError:
+        print(f"Skipping {psp}: Stratification failed.")
+        continue
+
+    if len(y_train.unique()) < 2:
+        print(f"Skipping {psp}: Only one class in training data.")
+        continue
 
     # Pipeline für Skalierung und logistische Regression erstellen
     pipeline = Pipeline([
