@@ -1,78 +1,135 @@
-import tkinter as tk
-from tkinter import ttk
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
 import random
+from io import BytesIO
 
-def get_psp_recommendation():
-    """
-    Diese Funktion nimmt Benutzereingaben für Betrag, Land und Uhrzeit und simuliert
-    eine Vorhersage der Erfolgswahrscheinlichkeiten für verschiedene PSPs.
-    """
-    amount = amount_entry.get()
-    country = country_var.get()
-    hour = hour_var.get()
+# Navigation (Seitenauswahl)
+st.set_page_config(page_title="PSP Dashboard", layout="centered")
+st.sidebar.title("🧭 Navigation")
+seite = st.sidebar.selectbox("Seite wählen", ["📈 Wirkung des Modells", "💳 Empfehlungssystem"])
 
-    # Simulierte Erfolgswahrscheinlichkeiten für verschiedene PSPs
-    # Hier werden Zufallswerte verwendet. In einem realen Modell würden hier Modellvorhersagen eingesetzt.
-    psp_probabilities = {
-        "Moneycard": round(random.uniform(0.6, 0.9), 2),
-        "Goldcard": round(random.uniform(0.5, 0.85), 2),
-        "UK_Card": round(random.uniform(0.4, 0.8), 2),
-        "Simplecard": round(random.uniform(0.7, 0.95), 2),
-    }
+# ----------------------------------
+# Seite: Wirkung des Modells
+# ----------------------------------
+if seite == "📈 Wirkung des Modells":
+    st.title("📈 Wirkung des Modells")
 
-    # Bestes PSP basierend auf der höchsten Erfolgswahrscheinlichkeit bestimmen
-    best_psp = max(psp_probabilities, key=psp_probabilities.get)
+    # Dummy-Daten vorbereiten
+    monate = pd.date_range(start="2023-01-01", periods=12, freq='ME').strftime('%b %Y')
+    erfolgsrate_vorher = [round(random.uniform(0.65, 0.7), 2) for _ in range(12)]
+    erfolgsrate_nachher = [round(e + random.uniform(0.05, 0.1), 2) for e in erfolgsrate_vorher]
+    kosten_vorher = [round(random.uniform(4.4, 4.7), 2) for _ in range(12)]
+    kosten_nachher = [round(k - random.uniform(0.4, 0.7), 2) for k in kosten_vorher]
 
-    # Aktualisierung der UI-Labels mit den berechneten Wahrscheinlichkeiten
-    for psp, prob in psp_probabilities.items():
-        psp_labels[psp].config(text=f"{psp}: {prob * 100:.1f}%")
+    daten = pd.DataFrame({
+        "Monat": monate,
+        "Erfolgsrate vorher": erfolgsrate_vorher,
+        "Erfolgsrate nachher": erfolgsrate_nachher,
+        "Kosten vorher": kosten_vorher,
+        "Kosten nachher": kosten_nachher
+    })
 
-    recommendation_label.config(text=f"Empfohlener PSP: {best_psp}")
+    # Interaktiver Zeitraumfilter
+    st.sidebar.header("📅 Zeitraum filtern")
+    start_index = st.sidebar.selectbox("Von Monat", list(daten.index), format_func=lambda i: daten['Monat'][i])
+    end_index = st.sidebar.selectbox("Bis Monat", list(daten.index), index=11, format_func=lambda i: daten['Monat'][i])
 
-# Erstellung des Hauptfensters der GUI
-root = tk.Tk()
-root.title("PSP Auswahl System")
-root.geometry("400x400")
+    gefilterte_daten = daten.iloc[start_index:end_index + 1]
 
-# Frame für die Transaktionsdetails
-frame = ttk.LabelFrame(root, text="Transaktionsdetails")
-frame.pack(pady=10, padx=10, fill="both")
+    # Erfolgsrate anzeigen
+    st.subheader("🟢 Erfolgsrate der Transaktionen")
+    st.line_chart(gefilterte_daten.set_index("Monat")[['Erfolgsrate vorher', 'Erfolgsrate nachher']])
 
-# Eingabefeld für den Transaktionsbetrag
-ttk.Label(frame, text="Betrag (€):").grid(row=0, column=0, padx=5, pady=5)
-amount_entry = ttk.Entry(frame)
-amount_entry.grid(row=0, column=1, padx=5, pady=5)
+    # Transaktionskosten anzeigen
+    st.subheader("💰 Durchschnittliche Transaktionskosten")
+    st.line_chart(gefilterte_daten.set_index("Monat")[['Kosten vorher', 'Kosten nachher']])
 
-# Auswahl des Landes über ein Dropdown-Menü
-ttk.Label(frame, text="Land:").grid(row=1, column=0, padx=5, pady=5)
-country_var = tk.StringVar()
-country_dropdown = ttk.Combobox(frame, textvariable=country_var, values=["Deutschland", "UK", "Frankreich", "Spanien"], state="readonly")
-country_dropdown.grid(row=1, column=1, padx=5, pady=5)
-country_dropdown.current(0)
+    # Zeitersparnis anzeigen
+    st.subheader("⏱️ Zeitersparnis durch Automatisierung")
+    anzahl_transaktionen = 1000
+    zeit_pro_transaktion_alt = 30  # Sekunden
+    zeit_gespart_min = (anzahl_transaktionen * zeit_pro_transaktion_alt) / 60
+    zeit_gespart_h = zeit_gespart_min / 60
+    st.metric("Gesparte Zeit", f"{zeit_gespart_h:.1f} Stunden", delta="im Vergleich zur manuellen Auswahl")
 
-# Auswahl der Uhrzeit über ein Dropdown-Menü (Stunden von 0 bis 23)
-ttk.Label(frame, text="Uhrzeit:").grid(row=2, column=0, padx=5, pady=5)
-hour_var = tk.StringVar()
-hour_dropdown = ttk.Combobox(frame, textvariable=hour_var, values=[str(i) for i in range(24)], state="readonly")
-hour_dropdown.grid(row=2, column=1, padx=5, pady=5)
-hour_dropdown.current(0)
+    # Export-Funktion
+    st.subheader("⬇️ Exportiere ausgewertete Daten")
+    excel_buffer = BytesIO()
+    gefilterte_daten.to_excel(excel_buffer, index=False)
+    excel_buffer.seek(0)
+    st.download_button(
+        label="📥 Daten als Excel herunterladen",
+        data=excel_buffer,
+        file_name="psp_modellwirkung.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-# Frame zur Anzeige der PSP-Wahrscheinlichkeiten
-psp_frame = ttk.LabelFrame(root, text="PSP Wahrscheinlichkeiten")
-psp_frame.pack(pady=10, padx=10, fill="both")
+    # Modellinfo-Box
+    with st.expander("ℹ️ Modellinfo: Auswahllogik & KI-Einsatz"):
+        st.markdown("""
+        **Modellbeschreibung:**
+        Das System verwendet ein Support Vector Machine (SVM) Modell zur Vorhersage der Erfolgswahrscheinlichkeit je PSP.
+        Die Auswahl folgt einer regelbasierten Logik:
+        
+        1. Wenn alle Wahrscheinlichkeiten 0 sind → *Simplecard*
+        2. Wenn *Simplecard* die beste oder fast beste ist → *Simplecard*
+        3. Dann *UK_Card*, *Moneycard*, *Goldcard* entsprechend der Erfolgswahrscheinlichkeit
+        
+        **Nutzen:**
+        - Höhere Erfolgsquote
+        - Niedrigere Transaktionskosten
+        - Automatisierte Entscheidung → spart Personalzeit und reduziert Fehler
+        """)
 
-psp_labels = {}
-for idx, psp in enumerate(["Moneycard", "Goldcard", "UK_Card", "Simplecard"]):
-    lbl = ttk.Label(psp_frame, text=f"{psp}: --")
-    lbl.pack(anchor="w", padx=10, pady=2)
-    psp_labels[psp] = lbl
+# ----------------------------------
+# Seite: Empfehlungssystem
+# ----------------------------------
+elif seite == "💳 Empfehlungssystem":
+    st.title("💳 Empfehlungssystem")
 
-# Label zur Anzeige der empfohlenen PSP-Auswahl
-recommendation_label = ttk.Label(root, text="Empfohlener PSP: --", font=("Arial", 12, "bold"))
-recommendation_label.pack(pady=10)
+    amount = st.number_input("Betrag (€)", min_value=0.0, max_value=10000.0, step=1.0, value=100.0)
+    country = st.selectbox("Land", ["Deutschland", "UK", "Frankreich", "Spanien"])
+    hour = st.selectbox("Uhrzeit (Stunde)", [str(i) for i in range(24)], index=12)
 
-# Button zur Berechnung der PSP-Empfehlung
-predict_button = ttk.Button(root, text="PSP Empfehlung berechnen", command=get_psp_recommendation)
-predict_button.pack(pady=10)
+    if st.button("📊 PSP Empfehlung berechnen"):
+        psp_success_probabilities = {
+            "Moneycard": round(random.uniform(0.6, 0.9), 2),
+            "Goldcard": round(random.uniform(0.5, 0.85), 2),
+            "UK_Card": round(random.uniform(0.4, 0.8), 2),
+            "Simplecard": round(random.uniform(0.7, 0.95), 2),
+        }
 
-root.mainloop()
+        all_probs = list(psp_success_probabilities.values())
+        chosen_psp = None
+
+        if all(prob == 0 for prob in all_probs):
+            chosen_psp = 'Simplecard'
+        else:
+            max_prob = max(all_probs)
+            if 'Simplecard' in psp_success_probabilities:
+                simplecard_prob = psp_success_probabilities['Simplecard']
+                if simplecard_prob == max_prob or max_prob - simplecard_prob < 0.1:
+                    chosen_psp = 'Simplecard'
+            if chosen_psp is None and 'UK_Card' in psp_success_probabilities:
+                uk_card_prob = psp_success_probabilities['UK_Card']
+                if uk_card_prob == max_prob or max_prob - uk_card_prob < 0.1:
+                    chosen_psp = 'UK_Card'
+            if chosen_psp is None and 'Moneycard' in psp_success_probabilities:
+                moneycard_prob = psp_success_probabilities['Moneycard']
+                if moneycard_prob == max_prob or max_prob - moneycard_prob < 0.1:
+                    chosen_psp = 'Moneycard'
+            if chosen_psp is None and 'Goldcard' in psp_success_probabilities:
+                goldcard_prob = psp_success_probabilities['Goldcard']
+                if goldcard_prob == max_prob:
+                    chosen_psp = 'Goldcard'
+
+        st.subheader("📊 Erfolgswahrscheinlichkeiten je PSP")
+        df = pd.DataFrame.from_dict(psp_success_probabilities, orient='index', columns=['Success Probability'])
+        df['Success Probability (%)'] = df['Success Probability'] * 100
+        st.bar_chart(df['Success Probability (%)'])
+
+        st.success(f"✅ Empfohlener PSP: **{chosen_psp}**")
+
+        if st.button("🚀 Transaktion freigeben"):
+            st.success(f"🎉 Transaktion wurde mit **{chosen_psp}** freigegeben!")
